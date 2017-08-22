@@ -613,6 +613,12 @@
 			"revisionTime": "2017-03-27T23:54:44Z"
 		},
 		{
+			"checksumSHA1": "rW10WiIk1TiI0tS45lA4A2t1g4k=",
+			"path": "github.com/go-sql-driver/mysql",
+			"revision": "9dee4ca50b83acdf57a35fb9e6fb4be640afa2f3",
+			"revisionTime": "2017-03-27T11:30:21Z"
+		},
+		{
 			"checksumSHA1": "AcJMITaSBps9sFH5J//CD5kDY2M=",
 			"path": "github.com/gogo/protobuf/proto",
 			"revision": "fcdc5011193ff531a548e9b0301828d5a5b97fd8",
@@ -1075,6 +1081,12 @@
 			"revisionTime": "2017-07-16T19:34:46Z"
 		},
 		{
+			"checksumSHA1": "o+cYxbFj21tlbJHuB1cyHQcaSKo=",
+			"path": "github.com/petar/GoLLRB/llrb",
+			"revision": "53be0d36a84c2a886ca057d34b6aa4468df9ccb4",
+			"revisionTime": "2013-04-27T21:51:48Z"
+		},
+		{
 			"checksumSHA1": "Ay0abDOOk9dq7PJ6w51G1Px/Wjk=",
 			"path": "github.com/pingcap/check",
 			"revision": "9b266636177e249ec28b0aeffe8e86bc272bb481",
@@ -1355,6 +1367,18 @@
 			"path": "github.com/stretchr/testify/suite",
 			"revision": "890a5c3458b43e6104ff5da8dfa139d013d77544",
 			"revisionTime": "2017-07-05T02:17:15Z"
+		},
+		{
+			"checksumSHA1": "AjOAcEMWUhDcoX6HjzGf+FaKTxc=",
+			"path": "github.com/twinj/uuid",
+			"revision": "7bbe408d339787c56ec15568c947c0959db1b275",
+			"revisionTime": "2016-09-09T07:54:38Z"
+		},
+		{
+			"checksumSHA1": "RDPPGf+Fen2vch82rHFMIB7TGOo=",
+			"path": "github.com/twinj/uuid/savers",
+			"revision": "7bbe408d339787c56ec15568c947c0959db1b275",
+			"revisionTime": "2016-09-09T07:54:38Z"
 		},
 		{
 			"checksumSHA1": "TZqZgZSjScFhjp1CVfHeMm+Vn2I=",
