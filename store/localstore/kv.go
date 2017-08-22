@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"fmt"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
 	"github.com/pingcap/tidb/kv"
@@ -273,6 +274,8 @@ func IsLocalStore(s kv.Storage) bool {
 	return ok
 }
 
+var GDB engine.DB
+
 // Open opens or creates a storage with specific format for a local engine Driver.
 // The path should be a URL format which is described in tidb package.
 func (d Driver) Open(path string) (kv.Storage, error) {
@@ -292,6 +295,9 @@ func (d Driver) Open(path string) (kv.Storage, error) {
 	}
 
 	db, err := d.Driver.Open(engineSchema)
+	fmt.Println("GDB set")
+	GDB = db
+
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

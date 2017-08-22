@@ -48,6 +48,8 @@ type DB interface {
 	Commit(b Batch) error
 	// Close closes database.
 	Close() error
+	// Rollback
+	RollBack() error
 }
 
 // Batch is the interface for local storage.

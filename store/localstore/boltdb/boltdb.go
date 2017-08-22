@@ -14,12 +14,17 @@
 package boltdb
 
 import (
-	"os"
-	"path"
-
+	"container/list"
+	"fmt"
 	"github.com/boltdb/bolt"
+	"github.com/ngaut/log"
+	//"github.com/davecgh/go-spew/spew"
 	"github.com/juju/errors"
 	"github.com/pingcap/tidb/store/localstore/engine"
+	"os"
+	"path"
+	"strings"
+	"time"
 )
 
 var (
@@ -29,6 +34,9 @@ var (
 var (
 	bucketName = []byte("tidb")
 )
+
+var UndoSwitch int = 0
+var UndoPatch list.List
 
 type db struct {
 	*bolt.DB
@@ -114,6 +122,37 @@ func (d *db) Commit(b engine.Batch) error {
 	}
 	err := d.DB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketName)
+		if UndoSwitch == 1 {
+			var unb Undobatch
+			for _, w := range bt.writes {
+				var un undopatch
+				// filter out heartbeat singals
+				if (!strings.HasPrefix(string(w.key), "mBgJobOw")) && (!strings.HasPrefix(string(w.key), "mDDLJobO")) {
+					if w.isDelete {
+						un.Key = w.key
+						un.Value = b.Get(w.key)
+						un.Isnew = false
+					} else {
+						v := b.Get(w.key)
+						if v == nil {
+							un.Isnew = true
+							un.Key = w.key
+							un.Value = w.value
+						} else {
+							un.Isnew = false
+							un.Key = w.key
+							un.Value = b.Get(w.key)
+						}
+					}
+					unb.Unwrites = append(unb.Unwrites, un)
+				}
+			}
+			if unb.Unwrites != nil {
+				unb.Isbegin = false
+				UndoPatch.PushBack(unb)
+			}
+		}
+
 		var err error
 		for _, w := range bt.writes {
 			if !w.isDelete {
@@ -144,6 +183,24 @@ type write struct {
 
 type batch struct {
 	writes []write
+}
+
+type undopatch struct {
+	Key   []byte `json:"key"`
+	Value []byte `json:"value"`
+	Isnew bool   `json:"isnew"`
+}
+
+type Undobatch struct {
+	Unwrites []undopatch `json:"unwrites"`
+	Isbegin  bool        `json:"isbegin"`
+}
+
+func (b *Undobatch) SetBegin(bnum string) {
+	var ud undopatch
+	ud.Key = []byte(bnum)
+	b.Unwrites = append(b.Unwrites, ud)
+	b.Isbegin = true
 }
 
 func (b *batch) Put(key []byte, value []byte) {
@@ -201,4 +258,56 @@ func (driver Driver) Open(dbPath string) (engine.DB, error) {
 // cloneBytes returns a deep copy of slice b.
 func cloneBytes(b []byte) []byte {
 	return append([]byte(nil), b...)
+}
+
+func Undo(d *db, ub Undobatch) (int, error) {
+	keyCount := 0
+	err := d.DB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		keyCount += len(ub.Unwrites)
+		var err error
+		for _, w := range ub.Unwrites {
+			if !w.Isnew {
+				err = b.Put(w.Key, w.Value)
+			} else {
+				err = b.Delete(w.Key)
+			}
+
+			if err != nil {
+				return errors.Trace(err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, errors.Trace(err)
+	} else {
+		return keyCount, nil
+	}
+}
+
+func (d *db) RollBack() error {
+	fmt.Println("Rollback")
+	if UndoPatch.Len() == 0 {
+		fmt.Println("empty UndoPatch")
+		return nil
+	}
+	var blockNum string
+	var keyCount int
+	start := time.Now()
+	for {
+		if (*UndoPatch.Back()).Value.(Undobatch).Isbegin == true {
+			fmt.Println("rollbacked", string((*UndoPatch.Back()).Value.(Undobatch).Unwrites[0].Key))
+			blockNum = string((*UndoPatch.Back()).Value.(Undobatch).Unwrites[0].Key)
+			UndoPatch.Remove(UndoPatch.Back())
+			break
+		}
+		undoKeys, _ := Undo(d, (*UndoPatch.Back()).Value.(Undobatch))
+		keyCount += undoKeys
+		UndoPatch.Remove(UndoPatch.Back())
+	}
+	end := time.Now()
+	log.Infof("[rollback] height %s, keys %d, consumes %s", blockNum, keyCount, end.Sub(start).String())
+
+	return nil
 }

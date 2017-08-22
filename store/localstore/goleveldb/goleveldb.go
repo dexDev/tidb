@@ -94,6 +94,10 @@ func (d *db) Close() error {
 	return d.DB.Close()
 }
 
+func (d *db) RollBack() error {
+	return nil
+}
+
 // Driver implements engine Driver.
 type Driver struct {
 }

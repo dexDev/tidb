@@ -14,15 +14,23 @@
 package main
 
 import (
+	"bufio"
+	"container/list"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
+	//"github.com/davecgh/go-spew/spew"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
 	"github.com/ngaut/systimemon"
@@ -35,8 +43,9 @@ import (
 	"github.com/pingcap/tidb/privilege/privileges"
 	"github.com/pingcap/tidb/server"
 	"github.com/pingcap/tidb/sessionctx/binloginfo"
+	"github.com/pingcap/tidb/store/localstore"
 	"github.com/pingcap/tidb/store/localstore/boltdb"
-	"github.com/pingcap/tidb/store/tikv"
+	//"github.com/pingcap/tidb/store/tikv"
 	"github.com/pingcap/tidb/util/printer"
 	"github.com/pingcap/tipb/go-binlog"
 	"github.com/prometheus/client_golang/prometheus"
@@ -46,11 +55,11 @@ import (
 
 var (
 	version             = flag.Bool("V", false, "print version information and exit")
-	store               = flag.String("store", "goleveldb", "registered store name, [memory, goleveldb, boltdb, tikv, mocktikv]")
+	store               = flag.String("store", "boltdb", "registered store name, [memory, goleveldb, boltdb, tikv, mocktikv]")
 	storePath           = flag.String("path", "/tmp/tidb", "tidb storage path")
 	logLevel            = flag.String("L", "info", "log level: info, debug, warn, error, fatal")
 	host                = flag.String("host", "0.0.0.0", "tidb server host")
-	port                = flag.String("P", "4000", "tidb server port")
+	port                = flag.String("P", "3306", "tidb server port")
 	statusPort          = flag.String("status", "10080", "tidb server status port")
 	ddlLease            = flag.String("lease", "10s", "schema lease duration, very dangerous to change only if you know what you do")
 	statsLease          = flag.String("statsLease", "3s", "stats lease duration, which inflences the time of analyze and stats load.")
@@ -58,7 +67,7 @@ var (
 	enablePS            = flag.Bool("perfschema", false, "If enable performance schema.")
 	enablePrivilege     = flag.Bool("privilege", true, "If enable privilege check feature. This flag will be removed in the future.")
 	reportStatus        = flag.Bool("report-status", true, "If enable status report HTTP service.")
-	logFile             = flag.String("log-file", "", "log file path")
+	logFile             = flag.String("log-file", "./dblog", "log file path")
 	joinCon             = flag.Int("join-concurrency", 5, "the number of goroutines that participate joining.")
 	crossJoin           = flag.Bool("cross-join", true, "whether support cartesian product or not.")
 	metricsAddr         = flag.String("metrics-addr", "", "prometheus pushgateway address, leaves it empty will disable prometheus push.")
@@ -79,10 +88,79 @@ var (
 		})
 )
 
+var PatchWatcher *list.Element
+
+func writePatch(unb boltdb.Undobatch) {
+	fmt.Println("write patch")
+	b, _ := json.Marshal(unb)
+
+	fileName := "undopatch"
+	patchfile, fileErr := os.OpenFile(fileName, os.O_WRONLY|os.O_APPEND, 0666)
+	defer patchfile.Close()
+	if fileErr != nil {
+		fmt.Println("open patch file error")
+	}
+	buf := bufio.NewWriter(patchfile)
+	_, err1 := fmt.Fprintln(buf, string(b))
+	buf.Flush()
+	if err1 != nil {
+		fmt.Println(err1)
+		panic(err1)
+	}
+
+}
+
 func main() {
+	// restore UndoPatch from file
+	fmt.Println("restore UndoPatch from file")
+	fileName := "undopatch"
+	patchfile, fileErr := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	buf := bufio.NewReader(patchfile)
+	if fileErr == nil {
+		for {
+			line, err := buf.ReadString('\n')
+			line = strings.TrimSpace(line)
+			var x boltdb.Undobatch
+			json.Unmarshal([]byte(line), &x)
+			boltdb.UndoPatch.PushBack(x)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				fmt.Println("read a line from undopatch err")
+				return
+			}
+		}
+
+	} else {
+		fmt.Println("open undopatch file error")
+	}
+	fmt.Println("restore UndoPatch from file end")
+	patchfile.Close()
+
+	PatchWatcher = boltdb.UndoPatch.Back()
+	go func() {
+		for {
+			if PatchWatcher.Next() != nil {
+				PatchWatcher = PatchWatcher.Next()
+				writePatch(PatchWatcher.Value.(boltdb.Undobatch))
+			} else {
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+	}()
+
+	go func() {
+		http.HandleFunc("/rollback", rollback)
+		http.HandleFunc("/newevent", newevent)
+		http.HandleFunc("/eventend", eventend)
+		http.HandleFunc("/rmpatchback", rmpatchback)
+		http.ListenAndServe("0.0.0.0:12345", nil)
+	}()
+
 	tidb.RegisterLocalStore("boltdb", boltdb.Driver{})
-	tidb.RegisterStore("tikv", tikv.Driver{})
-	tidb.RegisterStore("mocktikv", tikv.MockDriver{})
+	//tidb.RegisterStore("tikv", tikv.Driver{})
+	//tidb.RegisterStore("mocktikv", tikv.MockDriver{})
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -181,6 +259,7 @@ func main() {
 	if err := svr.Run(); err != nil {
 		log.Error(err)
 	}
+
 	domain.Close()
 	os.Exit(0)
 }
@@ -259,4 +338,27 @@ func parseLease(lease string) time.Duration {
 
 func hasRootPrivilege() bool {
 	return os.Geteuid() == 0
+}
+
+func newevent(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	num := r.Form.Get("blockNum")
+	fmt.Printf("new block %s\n", num)
+	var commitbegin boltdb.Undobatch
+	commitbegin.SetBegin(num)
+	boltdb.UndoSwitch = 1
+	boltdb.UndoPatch.PushBack(commitbegin)
+}
+
+func eventend(w http.ResponseWriter, r *http.Request) {
+	boltdb.UndoSwitch = 0
+}
+
+func rmpatchback(w http.ResponseWriter, r *http.Request) {
+	boltdb.UndoPatch.Remove(boltdb.UndoPatch.Back())
+	boltdb.UndoSwitch = 0
+}
+
+func rollback(w http.ResponseWriter, r *http.Request) {
+	localstore.GDB.RollBack()
 }
